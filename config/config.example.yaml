@@ -1,0 +1,31 @@
+# InboxHunter Agent - Example Configuration
+# ==========================================
+# 
+# This file shows available configuration options.
+# The agent primarily receives configuration from the platform,
+# but you can set local overrides here.
+#
+# Copy this file to config.yaml and modify as needed.
+
+# Platform connection (usually not needed - set via registration)
+platform:
+  api_url: "https://api.inboxhunter.io"
+  ws_url: "wss://api.inboxhunter.io/ws"
+
+# Local overrides (optional - platform settings take precedence)
+automation:
+  browser: "chromium"
+  headless: false
+  viewport_width: 1920
+  viewport_height: 1080
+  stealth_enabled: true
+
+# Agent behavior
+agent:
+  auto_start: true
+  minimize_to_tray: true
+  check_updates: true
+  log_level: "INFO"
+
+# Note: Credentials, LLM keys, and CAPTCHA keys are managed
+# through the web dashboard for security.

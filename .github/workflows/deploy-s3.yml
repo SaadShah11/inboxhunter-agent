@@ -1,0 +1,76 @@
+name: Build and Upload to S3
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  AWS_REGION: us-east-1
+  S3_BUCKET: inboxhunter-downloads
+
+jobs:
+  build-and-upload:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: InboxHunterAgent-linux
+          - os: macos-latest
+            artifact: InboxHunterAgent-macos
+          - os: windows-latest
+            artifact: InboxHunterAgent-windows.exe
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+      
+      - name: Build executable
+        run: python build.py --no-browser
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Upload to S3
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          aws s3 cp dist/ s3://${{ env.S3_BUCKET }}/releases/${VERSION}/ --recursive
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+
+  create-release:
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+
