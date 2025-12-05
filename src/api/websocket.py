@@ -170,9 +170,10 @@ class PlatformWebSocket:
         
         @sio.on('command', namespace='/ws/agent')
         async def on_command(data):
-            command = data.get('command')
-            params = data.get('params', {})
-            logger.info(f"Socket.io: Received command: {command}")
+            # Backend sends 'type' field (stop_task, cancel_task, etc.)
+            command = data.get('type') or data.get('command')
+            params = {k: v for k, v in data.items() if k not in ('type', 'command')}
+            logger.info(f"Socket.io: Received command: {command}, params: {params}")
             if self.on_command:
                 await self.on_command(command, params)
         
@@ -220,13 +221,15 @@ class PlatformWebSocket:
             except Exception as e:
                 logger.error(f"Heartbeat error: {e}")
     
-    async def send_task_result(self, task_id: str, result: Dict[str, Any]):
+    async def send_task_result(self, task_id: str, result: Dict[str, Any], success: bool = True, error: str = None):
         """
         Send task execution result to platform.
         
         Args:
             task_id: ID of the completed task
             result: Task result dictionary
+            success: Whether task completed successfully
+            error: Error message if task failed
         """
         if not self._connected or not self._sio:
             logger.warning("Not connected, cannot send task result")
@@ -235,20 +238,23 @@ class PlatformWebSocket:
         try:
             await self._sio.emit('task:complete', {
                 'taskId': task_id,
-                'result': result
+                'success': success,
+                'result': result,
+                'error': error
             }, namespace='/ws/agent')
-            logger.debug(f"Sent result for task {task_id}")
+            logger.debug(f"Sent result for task {task_id} (success={success})")
         except Exception as e:
             logger.error(f"Failed to send task result: {e}")
     
-    async def send_task_progress(self, task_id: str, progress: int, status: str = None):
+    async def send_task_progress(self, task_id: str, progress: int, status: str = None, current_step: str = None):
         """
         Send task progress update.
         
         Args:
             task_id: Task ID
             progress: Progress percentage (0-100)
-            status: Optional status message
+            status: Optional status (running, completed, failed)
+            current_step: Description of current step being executed
         """
         if not self._connected or not self._sio:
             return
@@ -257,18 +263,20 @@ class PlatformWebSocket:
             await self._sio.emit('task:progress', {
                 'taskId': task_id,
                 'progress': progress,
-                'status': status
+                'status': status or 'running',
+                'currentStep': current_step
             }, namespace='/ws/agent')
         except Exception as e:
             logger.error(f"Failed to send progress: {e}")
     
-    async def send_log(self, level: str, message: str, metadata: Dict = None):
+    async def send_log(self, level: str, message: str, task_id: str = None, metadata: Dict = None):
         """
         Send log message to platform for remote viewing.
         
         Args:
-            level: Log level (info, warning, error)
+            level: Log level (info, warning, error, success, debug)
             message: Log message
+            task_id: Optional task ID to associate log with
             metadata: Optional additional data
         """
         if not self._connected or not self._sio:
@@ -278,17 +286,43 @@ class PlatformWebSocket:
             await self._sio.emit('log', {
                 'level': level,
                 'message': message,
+                'taskId': task_id,
                 'metadata': metadata
             }, namespace='/ws/agent')
         except Exception as e:
             logger.debug(f"Failed to send log: {e}")
     
-    async def send_scraped_links(self, links: list):
+    async def send_task_started(self, task_id: str, task_type: str, url: str = None, keywords: list = None):
+        """
+        Notify platform that a task has started.
+        
+        Args:
+            task_id: Task ID
+            task_type: Type of task (scrape, signup)
+            url: Target URL (for signup tasks)
+            keywords: Search keywords (for scrape tasks)
+        """
+        if not self._connected or not self._sio:
+            return
+        
+        try:
+            await self._sio.emit('task:started', {
+                'taskId': task_id,
+                'type': task_type,
+                'url': url,
+                'keywords': keywords
+            }, namespace='/ws/agent')
+            logger.debug(f"Sent task:started for {task_id}")
+        except Exception as e:
+            logger.error(f"Failed to send task:started: {e}")
+    
+    async def send_scraped_links(self, links: list, task_id: str = None):
         """
         Send scraped links to platform for bulk storage.
         
         Args:
             links: List of scraped link data dictionaries
+            task_id: Optional task ID
         """
         if not self._connected or not self._sio:
             logger.warning("Not connected, cannot send scraped links")
@@ -297,7 +331,8 @@ class PlatformWebSocket:
         try:
             await self._sio.emit('scrape:results', {
                 'links': links,
-                'count': len(links)
+                'count': len(links),
+                'taskId': task_id
             }, namespace='/ws/agent')
             logger.info(f"Sent {len(links)} scraped links to platform")
         except Exception as e:

@@ -38,8 +38,10 @@ class InboxHunterAgent:
         """Initialize the agent."""
         self.config = config or get_agent_config()
         self.status = AgentStatus.IDLE
-        self._stop_requested = False
+        self._stop_agent = False  # Stop the entire agent
+        self._stop_task = False   # Stop the current task only
         self._current_task: Optional[Dict[str, Any]] = None
+        self._current_task_id: Optional[str] = None
         
         # Components (lazy initialized)
         self._ws_client = None
@@ -155,13 +157,29 @@ class InboxHunterAgent:
         """
         task_id = task.get("task_id")
         task_type = task.get("type", "signup")
+        url = task.get("url")
+        keywords = task.get("params", {}).get("keywords", [])
         
         self._emit_log(f"📥 Received task: {task_type} (ID: {task_id})")
         self._current_task = task
+        self._current_task_id = task_id
         self.stats["total_tasks"] += 1
+        
+        # Reset task stop flag for new task
+        self._stop_task = False
         
         try:
             self._set_status(AgentStatus.RUNNING)
+            
+            # Notify platform task has started
+            if self._ws_client:
+                await self._ws_client.send_task_started(
+                    task_id=task_id,
+                    task_type=task_type,
+                    url=url,
+                    keywords=keywords if task_type == "scrape" else None
+                )
+                await self._send_log("info", f"Starting {task_type} task...", task_id)
             
             if task_type == "signup":
                 result = await self._execute_signup_task(task)
@@ -172,14 +190,24 @@ class InboxHunterAgent:
             
             # Report result to platform
             if self._ws_client:
-                await self._ws_client.send_task_result(task_id, result)
+                success = result.get("success", False)
+                error = result.get("error")
+                await self._ws_client.send_task_result(
+                    task_id=task_id,
+                    result=result,
+                    success=success,
+                    error=error
+                )
             
             if result.get("success"):
                 self.stats["successful"] += 1
                 self._emit_log(f"✅ Task completed successfully")
+                await self._send_log("success", "Task completed successfully", task_id)
             else:
                 self.stats["failed"] += 1
-                self._emit_log(f"❌ Task failed: {result.get('error', 'Unknown error')}")
+                error_msg = result.get('error', 'Unknown error')
+                self._emit_log(f"❌ Task failed: {error_msg}")
+                await self._send_log("error", f"Task failed: {error_msg}", task_id)
             
             self._emit_stats()
             
@@ -187,17 +215,30 @@ class InboxHunterAgent:
             logger.error(f"Task execution error: {e}", exc_info=True)
             self.stats["failed"] += 1
             self._emit_log(f"❌ Task error: {e}")
+            await self._send_log("error", f"Task error: {str(e)}", task_id)
             
             if self._ws_client:
-                await self._ws_client.send_task_result(task_id, {
-                    "success": False,
-                    "error": str(e)
-                })
+                await self._ws_client.send_task_result(
+                    task_id=task_id,
+                    result={"success": False, "error": str(e)},
+                    success=False,
+                    error=str(e)
+                )
         
         finally:
             self._current_task = None
-            if not self._stop_requested:
+            self._current_task_id = None
+            self._stop_task = False  # Reset task stop flag
+            if not self._stop_agent:
                 self._set_status(AgentStatus.CONNECTED)
+    
+    async def _send_log(self, level: str, message: str, task_id: str = None):
+        """Send log to platform via WebSocket."""
+        if self._ws_client:
+            try:
+                await self._ws_client.send_log(level, message, task_id=task_id)
+            except Exception as e:
+                logger.debug(f"Failed to send log to platform: {e}")
     
     async def _execute_signup_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -212,6 +253,7 @@ class InboxHunterAgent:
         from src.automation.browser import BrowserAutomation
         from src.automation.agent_orchestrator import AIAgentOrchestrator
         
+        task_id = task.get("task_id")
         url = task.get("url")
         credentials = task.get("credentials", {})
         
@@ -230,6 +272,14 @@ class InboxHunterAgent:
             }
         
         self._emit_log(f"🌐 Processing: {url}")
+        await self._send_log("info", f"Processing URL: {url}", task_id)
+        
+        # Check stop before starting
+        if self._stop_task:
+            await self._send_log("warning", "Task stopped before starting", task_id)
+            return {"success": False, "error": "Stopped by user", "url": url, "stopped": True}
+        
+        await self._send_log("info", "Initializing browser...", task_id)
         
         # Initialize browser if needed
         if self._browser is None:
@@ -237,14 +287,40 @@ class InboxHunterAgent:
             await self._browser.initialize()
         
         try:
+            # Check stop after browser init
+            if self._stop_task:
+                await self._send_log("warning", "Task stopped by user", task_id)
+                await self._close_browser()
+                return {"success": False, "error": "Stopped by user", "url": url, "stopped": True}
+            
             # Navigate to page
+            await self._send_log("info", "Loading page...", task_id)
+            
             success = await self._browser.navigate(url)
             if not success:
+                await self._send_log("error", "Failed to load page", task_id)
                 return {"success": False, "error": "Failed to load page"}
+            
+            # Check stop after navigation
+            if self._stop_task:
+                await self._send_log("warning", "Task stopped by user", task_id)
+                await self._close_browser()
+                return {"success": False, "error": "Stopped by user", "url": url, "stopped": True}
+            
+            await self._send_log("info", "Detecting page structure...", task_id)
             
             # Detect platform
             platform = await self._browser.detect_platform()
             self._emit_log(f"🔍 Platform detected: {platform}")
+            await self._send_log("info", f"Platform detected: {platform}", task_id)
+            
+            # Check stop after platform detection
+            if self._stop_task:
+                await self._send_log("warning", "Task stopped by user", task_id)
+                await self._close_browser()
+                return {"success": False, "error": "Stopped by user", "url": url, "stopped": True}
+            
+            await self._send_log("info", "Analyzing form fields...", task_id)
             
             # Create AI agent
             agent = AIAgentOrchestrator(
@@ -255,22 +331,73 @@ class InboxHunterAgent:
                     "api_key": self.config.llm.api_key,
                     "model": self.config.llm.model
                 },
-                stop_check=lambda: self._stop_requested
+                stop_check=lambda: self._stop_task
             )
+            
+            # Check stop before AI analysis
+            if self._stop_task:
+                await self._send_log("warning", "Task stopped by user", task_id)
+                await self._close_browser()
+                return {"success": False, "error": "Stopped by user", "url": url, "stopped": True}
+            
+            await self._send_log("info", "AI analyzing form...", task_id)
             
             # Execute signup
             result = await agent.execute_signup()
+            
+            # Check if stopped during execution
+            if self._stop_task:
+                await self._send_log("warning", "Task stopped by user", task_id)
+                await self._close_browser()
+                result["stopped"] = True
+                if not result.get("error"):
+                    result["error"] = "Stopped by user"
+                return result
+            
+            await self._send_log("info", "Finalizing...", task_id)
             
             # Add metadata
             result["url"] = url
             result["platform"] = platform
             result["timestamp"] = datetime.utcnow().isoformat()
             
+            if result.get("success"):
+                await self._send_progress(task_id, 100, "Complete")
+                await self._send_log("success", "Form submitted successfully!", task_id)
+            
+            # Close browser after successful completion
+            await self._close_browser()
+            
             return result
             
         except Exception as e:
             logger.error(f"Signup error: {e}", exc_info=True)
+            await self._send_log("error", f"Signup error: {str(e)}", task_id)
+            await self._close_browser()
             return {"success": False, "error": str(e), "url": url}
+    
+    async def _close_browser(self):
+        """Close the browser instance."""
+        if self._browser:
+            try:
+                await self._browser.close()
+                self._browser = None
+                logger.info("Browser closed")
+            except Exception as e:
+                logger.debug(f"Error closing browser: {e}")
+    
+    async def _send_progress(self, task_id: str, progress: int, current_step: str = None):
+        """Send progress update to platform."""
+        if self._ws_client:
+            try:
+                await self._ws_client.send_task_progress(
+                    task_id=task_id,
+                    progress=progress,
+                    status="running",
+                    current_step=current_step
+                )
+            except Exception as e:
+                logger.debug(f"Failed to send progress: {e}")
     
     async def _execute_scrape_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -282,10 +409,19 @@ class InboxHunterAgent:
         Returns:
             Result dictionary with scraped URLs
         """
+        task_id = task.get("task_id")
         source = task.get("source", "meta_ads")
         params = task.get("params", {})
         
         self._emit_log(f"🔍 Starting scrape: {source}")
+        await self._send_log("info", f"Starting scrape from {source}", task_id)
+        
+        # Check stop before starting
+        if self._stop_task:
+            await self._send_log("warning", "Task stopped before starting", task_id)
+            return {"success": False, "error": "Stopped by user", "stopped": True}
+        
+        await self._send_log("info", "Initializing scraper...", task_id)
         
         try:
             if source in ["meta", "meta_ads"]:
@@ -297,16 +433,37 @@ class InboxHunterAgent:
                 config.sources.meta_ads_library.ad_limit = limit
                 config.sources.meta_ads_library.enabled = True
                 
-                scraper = MetaAdsLibraryScraper(config, stop_check=lambda: self._stop_requested)
+                # Check stop before browser init
+                if self._stop_task:
+                    await self._send_log("warning", "Task stopped by user", task_id)
+                    return {"success": False, "error": "Stopped by user", "stopped": True}
+                
+                await self._send_log("info", "Starting browser for Meta Ads Library...", task_id)
+                
+                scraper = MetaAdsLibraryScraper(config, stop_check=lambda: self._stop_task)
                 await scraper.initialize()
+                
+                # Check stop after browser init
+                if self._stop_task:
+                    await scraper.close()
+                    await self._send_log("warning", "Task stopped by user", task_id)
+                    return {"success": False, "error": "Stopped by user", "stopped": True}
                 
                 keywords = params.get("keywords", ["marketing"])
                 self._emit_log(f"🔎 Searching keywords: {', '.join(keywords)}")
+                await self._send_log("info", f"Searching keywords: {', '.join(keywords)}", task_id)
                 
                 ads = await scraper.scrape_ads(keywords=keywords)
                 await scraper.close()
                 
+                # Check if stopped during scraping
+                if self._stop_task:
+                    await self._send_log("warning", "Task stopped by user", task_id)
+                    return {"success": False, "error": "Stopped by user", "ads": ads, "count": len(ads), "stopped": True}
+                
+                await self._send_progress(task_id, 80, f"Found {len(ads)} ads...")
                 self._emit_log(f"📊 Found {len(ads)} unique ads")
+                await self._send_log("success", f"Found {len(ads)} unique ads", task_id)
                 
                 # Send scraped links to platform via API
                 if ads and self._ws_client:
@@ -325,9 +482,15 @@ class InboxHunterAgent:
                         for ad in ads if ad.get("url")
                     ]
                     
+                    await self._send_progress(task_id, 90, "Sending links to platform...")
+                    await self._send_log("info", f"Sending {len(links_data)} links to platform...", task_id)
+                    
                     # Send links back via WebSocket
-                    await self._ws_client.send_scraped_links(links_data)
+                    await self._ws_client.send_scraped_links(links_data, task_id=task_id)
                     self._emit_log(f"📤 Sent {len(links_data)} links to platform")
+                    await self._send_log("success", f"Sent {len(links_data)} links to platform", task_id)
+                
+                await self._send_progress(task_id, 100, "Complete")
                 
                 return {
                     "success": True,
@@ -349,10 +512,12 @@ class InboxHunterAgent:
                 }
             
             else:
+                await self._send_log("error", f"Unknown scrape source: {source}", task_id)
                 return {"success": False, "error": f"Unknown scrape source: {source}"}
                 
         except Exception as e:
             logger.error(f"Scrape error: {e}", exc_info=True)
+            await self._send_log("error", f"Scrape error: {str(e)}", task_id)
             return {"success": False, "error": str(e)}
     
     async def _handle_config_update(self, config_data: Dict[str, Any]):
@@ -368,21 +533,37 @@ class InboxHunterAgent:
         - pause: Pause task execution
         - resume: Resume task execution
         - stop: Stop current task
+        - stop_task: Stop specific task
+        - cancel_task: Cancel specific task
         - restart: Restart the agent
         """
-        self._emit_log(f"📥 Received command: {command}")
+        cmd_type = params.get("type", command) if isinstance(params, dict) else command
+        task_id = params.get("taskId") if isinstance(params, dict) else None
         
-        if command == "pause":
+        logger.warning(f"📥 Received command: {cmd_type}, task_id: {task_id}")
+        self._emit_log(f"📥 Received command: {cmd_type}")
+        
+        if cmd_type == "pause":
             self._set_status(AgentStatus.PAUSED)
             
-        elif command == "resume":
+        elif cmd_type == "resume":
             self._set_status(AgentStatus.CONNECTED)
             
-        elif command == "stop":
-            self._stop_requested = True
-            self._set_status(AgentStatus.STOPPING)
+        elif cmd_type in ["stop", "stop_task"]:
+            logger.warning("🛑 STOP COMMAND RECEIVED - Setting task stop flag")
+            self._stop_task = True
+            self._emit_log("🛑 Stop requested - stopping current task...")
+            # Send immediate feedback to UI
+            await self._send_log("warning", "🛑 Stop command received - stopping task...", task_id)
             
-        elif command == "restart":
+        elif cmd_type == "cancel_task":
+            logger.warning("❌ CANCEL COMMAND RECEIVED - Setting task stop flag")
+            self._stop_task = True
+            self._emit_log("❌ Cancel requested - stopping immediately...")
+            # Send immediate feedback to UI
+            await self._send_log("warning", "❌ Cancel command received - stopping immediately...", task_id)
+            
+        elif cmd_type == "restart":
             await self.restart()
     
     def _build_legacy_config(self):
@@ -457,7 +638,8 @@ class InboxHunterAgent:
         Connects to platform and processes tasks.
         """
         self.stats["current_session_start"] = datetime.utcnow().isoformat()
-        self._stop_requested = False
+        self._stop_agent = False
+        self._stop_task = False
         
         self._emit_log("🚀 Starting InboxHunter Agent...")
         
@@ -470,7 +652,7 @@ class InboxHunterAgent:
         
         # Main loop - keep connection alive and process tasks
         try:
-            while not self._stop_requested:
+            while not self._stop_agent:
                 if self._ws_client:
                     await self._ws_client.process_messages()
                 await asyncio.sleep(0.1)
@@ -486,7 +668,8 @@ class InboxHunterAgent:
     async def stop(self):
         """Stop the agent gracefully."""
         self._emit_log("🛑 Stopping agent...")
-        self._stop_requested = True
+        self._stop_agent = True
+        self._stop_task = True  # Also stop any running task
         self._set_status(AgentStatus.STOPPING)
         
         # Wait for current task to complete
