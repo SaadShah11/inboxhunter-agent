@@ -28,6 +28,7 @@ ROOT_DIR = Path(__file__).parent
 BUILD_DIR = ROOT_DIR / "build"
 DIST_DIR = ROOT_DIR / "dist"
 RESOURCES_DIR = ROOT_DIR / "resources"
+ASSETS_DIR = ROOT_DIR / "assets"
 
 
 def log(message: str, level: str = "INFO"):
@@ -141,13 +142,16 @@ def build_executable(include_browser: bool = True, debug: bool = False):
         elif system == "Darwin":
             cmd.append("--windowed")
     
-    # Add icon if exists
-    icon_path = RESOURCES_DIR / f"icon{icon_ext}"
+    # Add icon if exists (check assets directory first, then resources)
+    icon_path = ASSETS_DIR / f"icon{icon_ext}"
+    if not icon_path.exists():
+        icon_path = RESOURCES_DIR / f"icon{icon_ext}"
     if icon_path.exists():
         cmd.extend(["--icon", str(icon_path)])
     
     # Hidden imports for dynamic modules
     hidden_imports = [
+        # App modules
         "src.core",
         "src.core.agent",
         "src.core.config",
@@ -167,15 +171,55 @@ def build_executable(include_browser: bool = True, debug: bool = False):
         "src.scrapers.meta_ads",
         "src.scrapers.csv_parser",
         "src.config",
+        # Third-party libraries
         "pystray",
         "PIL",
+        "PIL._tkinter_finder",
         "websockets",
         "httpx",
         "openai",
+        "socketio",
+        "engineio",
+        "aiohttp",
+        "yaml",
+        "pydantic",
+        "loguru",
+        # Fix for pkg_resources/setuptools issues
+        "jaraco",
+        "jaraco.text",
+        "jaraco.functools",
+        "jaraco.context",
+        "jaraco.classes",
+        "pkg_resources",
+        "pkg_resources.extern",
+        "setuptools",
+        "setuptools._vendor",
+        "setuptools._vendor.jaraco",
+        "setuptools._vendor.jaraco.text",
+        "setuptools._vendor.jaraco.functools",
+        "setuptools._vendor.jaraco.context",
+        "platformdirs",
+        "packaging",
+        "packaging.version",
+        "packaging.specifiers",
+        "packaging.requirements",
+        "packaging.markers",
+        "importlib_metadata",
+        "zipp",
     ]
     
     for imp in hidden_imports:
         cmd.extend(["--hidden-import", imp])
+    
+    # Exclude problematic modules that cause issues
+    excludes = [
+        "tkinter",
+        "test",
+        "unittest",
+    ]
+    
+    for exc in excludes:
+        cmd.extend(["--exclude-module", exc])
     
     # Add data files
     data_files = [

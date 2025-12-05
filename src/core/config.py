@@ -5,6 +5,7 @@ Handles local config storage and platform config sync.
 
 import json
 import os
+import yaml
 from pathlib import Path
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
@@ -30,8 +31,8 @@ def get_data_dir() -> Path:
 
 class PlatformConfig(BaseModel):
     """Configuration received from platform."""
-    api_url: str = "https://api.inboxhunter.io"
-    ws_url: str = "wss://api.inboxhunter.io/ws"
+    api_url: str = "http://localhost:3001"
+    ws_url: str = "ws://localhost:3001/ws/agent"
 
 
 class CredentialsConfig(BaseModel):
@@ -94,19 +95,96 @@ class AgentConfig(BaseModel):
     
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "AgentConfig":
-        """Load configuration from file."""
+        """Load configuration from file, merging JSON and YAML configs."""
         if config_path is None:
             config_path = get_data_dir() / "agent_config.json"
         
+        # Start with empty config
+        config = cls()
+        
+        # Load from JSON (agent_config.json - has agent_id and agent_token)
         if config_path.exists():
             try:
                 with open(config_path, 'r') as f:
                     data = json.load(f)
-                return cls(**data)
+                config = cls(**data)
             except Exception as e:
-                logger.warning(f"Failed to load config: {e}, using defaults")
+                logger.warning(f"Failed to load JSON config: {e}")
         
-        return cls()
+        # Also load from YAML config (config/config.yaml - has API keys, credentials)
+        yaml_paths = [
+            Path("config/config.yaml"),
+            Path(__file__).parent.parent.parent / "config" / "config.yaml",
+        ]
+        
+        for yaml_path in yaml_paths:
+            if yaml_path.exists():
+                try:
+                    with open(yaml_path, 'r') as f:
+                        yaml_data = yaml.safe_load(f) or {}
+                    
+                    # Merge YAML settings into config (YAML takes priority for API keys)
+                    if "llm" in yaml_data:
+                        llm = yaml_data["llm"]
+                        # Only override if YAML has a non-empty API key
+                        if llm.get("api_key") and llm.get("api_key") != "YOUR_OPENAI_API_KEY":
+                            config.llm = LLMConfig(
+                                enabled=llm.get("enabled", config.llm.enabled),
+                                provider=llm.get("provider", config.llm.provider),
+                                api_key=llm.get("api_key", config.llm.api_key),
+                                model=llm.get("model", config.llm.model)
+                            )
+                    
+                    if "captcha" in yaml_data:
+                        captcha = yaml_data["captcha"]
+                        if captcha.get("api_key"):
+                            config.captcha = CaptchaConfig(
+                                service=captcha.get("service", config.captcha.service),
+                                api_key=captcha.get("api_key", config.captcha.api_key),
+                                timeout=captcha.get("timeout", config.captcha.timeout)
+                            )
+                    
+                    if "credentials" in yaml_data:
+                        creds = yaml_data["credentials"]
+                        phone = creds.get("phone", {})
+                        config.credentials = CredentialsConfig(
+                            first_name=creds.get("first_name", config.credentials.first_name),
+                            last_name=creds.get("last_name", config.credentials.last_name),
+                            full_name=creds.get("full_name", config.credentials.full_name),
+                            email=creds.get("email", config.credentials.email),
+                            phone_country_code=phone.get("country_code", config.credentials.phone_country_code),
+                            phone_number=phone.get("number", config.credentials.phone_number),
+                            phone_full=phone.get("full", config.credentials.phone_full)
+                        )
+                    
+                    if "automation" in yaml_data:
+                        auto = yaml_data["automation"]
+                        config.automation = AutomationConfig(
+                            headless=auto.get("headless", config.automation.headless),
+                            browser=auto.get("browser", config.automation.browser),
+                            viewport_width=auto.get("viewport_width", config.automation.viewport_width),
+                            viewport_height=auto.get("viewport_height", config.automation.viewport_height),
+                            stealth_enabled=auto.get("stealth_enabled", config.automation.stealth_enabled),
+                            typing_delay_min=auto.get("typing_delay_min", config.automation.typing_delay_min),
+                            typing_delay_max=auto.get("typing_delay_max", config.automation.typing_delay_max)
+                        )
+                    
+                    if "platform" in yaml_data:
+                        platform = yaml_data["platform"]
+                        # Only override platform URLs if not already set from registration
+                        if not config.platform.api_url or config.platform.api_url == "http://localhost:3001":
+                            config.platform = PlatformConfig(
+                                api_url=platform.get("api_url", config.platform.api_url),
+                                ws_url=platform.get("ws_url", config.platform.ws_url)
+                            )
+                    
+                    logger.debug(f"Merged YAML config from {yaml_path}")
+                    break  # Only load from first found YAML
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to load YAML config from {yaml_path}: {e}")
+        
+        return config
     
     def save(self, config_path: Optional[Path] = None):
         """Save configuration to file."""

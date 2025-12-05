@@ -23,7 +23,7 @@ class PlatformClient:
     - Version checking
     """
     
-    DEFAULT_API_URL = "https://api.inboxhunter.io"
+    DEFAULT_API_URL = "http://localhost:3001"  # Local dev, change for production
     TIMEOUT = 30
     
     def __init__(
@@ -123,14 +123,14 @@ class PlatformClient:
     
     async def register_agent(
         self,
-        user_token: str,
+        registration_token: str,
         machine_name: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Register a new agent with the platform.
         
         Args:
-            user_token: User's authentication token (from web login)
+            registration_token: Registration token from web dashboard
             machine_name: Optional name for this machine
             
         Returns:
@@ -143,22 +143,50 @@ class PlatformClient:
         machine_id = str(uuid.uuid4())  # In production, use actual hardware ID
         
         data = {
-            "user_token": user_token,
-            "machine_id": machine_id,
-            "machine_name": machine_name or platform.node(),
+            "machineId": machine_id,
+            "name": machine_name or platform.node(),
             "os": platform.system(),
-            "os_version": platform.release(),
-            "agent_version": "2.0.0"
+            "version": "2.0.0"
         }
         
-        result = await self._request("POST", "/agent/register", data=data)
+        # Use the registration token as Bearer auth
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {registration_token}",
+            "User-Agent": "InboxHunter-Agent/2.0"
+        }
         
-        if result:
-            self.agent_id = result.get("agent_id")
-            self.agent_token = result.get("agent_token")
-            logger.info(f"Agent registered: {self.agent_id}")
-        
-        return result
+        try:
+            async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
+                response = await client.post(
+                    f"{self.api_url}/api/agents/register",
+                    json=data,
+                    headers=headers
+                )
+                
+                if response.status_code >= 400:
+                    logger.error(f"Registration failed ({response.status_code}): {response.text}")
+                    return None
+                
+                result = response.json()
+                
+                if result:
+                    # Extract agent info
+                    agent_data = result.get("agent", {})
+                    self.agent_id = agent_data.get("id")
+                    self.agent_token = result.get("token")
+                    logger.info(f"Agent registered: {self.agent_id}")
+                    
+                    return {
+                        "agent_id": self.agent_id,
+                        "agent_token": self.agent_token
+                    }
+                
+                return None
+                
+        except Exception as e:
+            logger.error(f"Registration error: {e}")
+            return None
     
     async def authenticate(self) -> bool:
         """

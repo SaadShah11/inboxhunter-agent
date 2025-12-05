@@ -1,35 +1,76 @@
 # InboxHunter Agent
 
-A lightweight desktop agent that connects to the InboxHunter platform and executes browser automation tasks for email list signups.
+<p align="center">
+  <img src="assets/icon_source.png" alt="InboxHunter Agent" width="128" height="128">
+</p>
+
+<p align="center">
+  <strong>AI-Powered Browser Automation for Email List Signups</strong>
+</p>
+
+<p align="center">
+  <a href="#installation">Installation</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#development">Development</a> •
+  <a href="#building">Building</a>
+</p>
+
+---
 
 ## Overview
 
-The InboxHunter Agent is a companion application that runs on your computer and performs the actual browser automation. It connects to the InboxHunter web platform for configuration, task management, and result reporting.
+The InboxHunter Agent is a desktop application that connects to the InboxHunter platform and executes browser automation tasks. It uses:
 
-### Key Features
-
-- **System Tray Integration**: Runs quietly in the background
-- **Platform Sync**: Receives tasks and settings from web dashboard
-- **AI-Powered Forms**: Uses GPT-4o Vision for intelligent form detection
-- **Bot Detection Bypass**: Advanced stealth techniques
-- **CAPTCHA Solving**: Integrated 2Captcha support
-- **Auto Updates**: Automatically keeps itself updated
+- **GPT-4o Vision** for intelligent form detection and filling
+- **Playwright** for robust browser automation with stealth features
+- **2Captcha** for automatic CAPTCHA solving
+- **Socket.IO** for real-time communication with the platform
 
 ## Installation
 
-### Option 1: Download Executable (Recommended)
+### Pre-built Installers (Recommended)
 
-1. Go to [InboxHunter Dashboard](https://app.inboxhunter.io/download)
-2. Download the agent for your platform
-3. Run the installer
-4. Register the agent (see below)
+Download the latest installer for your platform from the [Dashboard](https://app.inboxhunter.io/dashboard/download) or [GitHub Releases](https://github.com/YOUR_ORG/inboxhunter-agent/releases).
 
-### Option 2: Run from Source
+| Platform | Download |
+|----------|----------|
+| **Windows** | `InboxHunterAgent-Setup.exe` |
+| **macOS** | `InboxHunterAgent.dmg` |
+| **Linux** | `InboxHunterAgent.AppImage` |
+
+#### Windows
+
+1. Download the `.exe` installer
+2. Run the installer and follow the setup wizard
+3. Launch "InboxHunter Agent" from your desktop or Start Menu
+
+#### macOS
+
+1. Download the `.dmg` file
+2. Open the DMG and drag the app to Applications
+3. Right-click → Open (first time only, to bypass Gatekeeper)
+4. If blocked, go to System Preferences → Security & Privacy → Allow
+
+#### Linux
+
+```bash
+# Download the AppImage
+wget https://github.com/YOUR_ORG/inboxhunter-agent/releases/latest/download/InboxHunterAgent.AppImage
+
+# Make it executable
+chmod +x InboxHunterAgent.AppImage
+
+# Run it
+./InboxHunterAgent.AppImage
+```
+
+### From Source (Development)
 
 ```bash
 # Clone the repository
-git clone https://github.com/inboxhunter/agent.git
-cd agent
+git clone https://github.com/YOUR_ORG/inboxhunter-agent.git
+cd inboxhunter-agent
 
 # Create virtual environment
 python -m venv venv
@@ -38,181 +79,331 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Install Playwright browser
+# Install Playwright browsers
 playwright install chromium
 
 # Run the agent
-python main.py
+python main.py --console --debug
 ```
 
-## Registration
+## Quick Start
 
-Before using the agent, you need to register it with your InboxHunter account:
+### 1. Get a Registration Token
 
-1. Log in to [InboxHunter Dashboard](https://app.inboxhunter.io)
-2. Go to **Settings → Agents**
-3. Click **Add Agent** and copy the registration token
-4. Run the agent with registration:
-   ```bash
-   python main.py --register
-   ```
-5. Paste the token when prompted
+1. Log in to the [InboxHunter Dashboard](https://app.inboxhunter.io)
+2. Go to **Dashboard → Download Agent**
+3. Click **"Generate Registration Token"**
+4. Copy the token
 
-## Usage
-
-### Normal Mode (System Tray)
+### 2. Register the Agent
 
 ```bash
-python main.py
+# Run with --register flag
+./InboxHunterAgent --register
+
+# Or in development:
+python main.py --register
 ```
 
-The agent will:
-- Appear in your system tray
-- Connect to the platform automatically
-- Wait for tasks from the dashboard
+Enter your registration token when prompted.
 
-### Console Mode
+### 3. Configure API Keys
+
+Edit `config/config.yaml`:
+
+```yaml
+llm:
+  provider: "openai"
+  api_key: "sk-your-openai-api-key"  # Required for form detection
+  model: "gpt-4o"
+
+captcha:
+  service: "2captcha"
+  api_key: "your-2captcha-key"  # Optional, for CAPTCHA solving
+```
+
+### 4. Start the Agent
 
 ```bash
-python main.py --console
+# Normal mode (system tray)
+./InboxHunterAgent
+
+# Console mode (see logs)
+./InboxHunterAgent --console
+
+# Debug mode (verbose logging)
+./InboxHunterAgent --console --debug
 ```
 
-Runs without system tray, useful for servers or debugging.
+The agent will appear in your system tray and automatically connect to the platform.
+
+## Configuration
+
+### Configuration File (`config/config.yaml`)
+
+```yaml
+# Platform Connection
+platform:
+  api_url: "https://api.inboxhunter.io"
+  ws_url: "wss://api.inboxhunter.io/ws/agent"
+
+# Credentials for form filling
+credentials:
+  first_name: "John"
+  last_name: "Doe"
+  email: "john@example.com"
+  phone:
+    country_code: "+1"
+    number: "5551234567"
+
+# LLM Configuration (Required)
+llm:
+  enabled: true
+  provider: "openai"
+  api_key: "sk-your-openai-api-key"
+  model: "gpt-4o"  # Recommended for vision
+
+# CAPTCHA Solving (Optional)
+captcha:
+  service: "2captcha"
+  api_key: "your-2captcha-api-key"
+  timeout: 120
+
+# Browser Settings
+automation:
+  browser: "chromium"
+  headless: false  # Set true to hide browser
+  viewport_width: 1920
+  viewport_height: 1080
+  stealth_enabled: true
+
+# Rate Limiting
+rate_limiting:
+  max_signups_per_hour: 25
+  max_signups_per_day: 250
+  delay_between_signups: [30, 90]  # Random delay range
+```
+
+### Environment Variables
+
+You can also use environment variables:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export TWOCAPTCHA_API_KEY="..."
+export INBOXHUNTER_API_URL="https://api.inboxhunter.io"
+```
 
 ### Command Line Options
 
-| Option | Description |
-|--------|-------------|
-| `--register` | Register agent with platform |
-| `--console` | Run in console mode |
-| `--debug` | Enable debug logging |
-| `--version` | Show version |
-
-## Architecture
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    InboxHunter Platform                      │
-│  (Web Dashboard + API)                                       │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-                              │ WebSocket (real-time)
-                              │ REST API (config, results)
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    InboxHunter Agent                         │
-│  ┌─────────┐  ┌─────────────┐  ┌──────────────────────────┐ │
-│  │ System  │  │  Platform   │  │    Browser Automation    │ │
-│  │  Tray   │  │  Client     │  │  • Playwright            │ │
-│  │   UI    │  │  (WS+REST)  │  │  • AI Agent (GPT-4o)     │ │
-│  └─────────┘  └─────────────┘  │  • Stealth Mode          │ │
-│                                │  • CAPTCHA Solver         │ │
-│                                └──────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
+Usage: InboxHunterAgent [OPTIONS]
+
+Options:
+  --register      Register agent with platform
+  --console       Run in console mode (no system tray)
+  --debug         Enable debug logging
+  --version       Show version and exit
+  --help          Show this help message
 ```
 
-## Project Structure
+## How It Works
+
+### Task Flow
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│    Platform     │────▶│     Agent       │────▶│    Browser      │
+│   (Dashboard)   │     │  (Your Machine) │     │  (Automated)    │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+        │                       │                       │
+        │  1. Dispatch Task     │                       │
+        │──────────────────────▶│                       │
+        │                       │  2. Navigate to URL   │
+        │                       │──────────────────────▶│
+        │                       │  3. Analyze with GPT  │
+        │                       │──────────────────────▶│
+        │                       │  4. Fill Form         │
+        │                       │──────────────────────▶│
+        │  5. Report Results    │                       │
+        │◀──────────────────────│                       │
+```
+
+### AI Form Detection
+
+The agent uses GPT-4o Vision to:
+
+1. **Screenshot** the page
+2. **Analyze** form structure and fields
+3. **Identify** input types (email, name, phone)
+4. **Generate** fill actions
+5. **Validate** submissions
+
+### Stealth Features
+
+Built-in anti-detection:
+
+- Randomized user agents and screen sizes
+- WebGL and canvas fingerprint spoofing
+- Human-like typing with variable delays
+- Natural mouse movements
+- Timezone and locale spoofing
+
+## Development
+
+### Project Structure
 
 ```
 inboxhunter-agent/
 ├── main.py                 # Entry point
-├── src/
-│   ├── core/
-│   │   ├── agent.py        # Main agent controller
-│   │   ├── config.py       # Configuration management
-│   │   └── updater.py      # Auto-update mechanism
-│   ├── api/
-│   │   ├── client.py       # REST API client
-│   │   └── websocket.py    # WebSocket client
-│   ├── ui/
-│   │   └── tray.py         # System tray interface
-│   ├── automation/
-│   │   ├── browser.py      # Playwright automation
-│   │   ├── agent_orchestrator.py  # AI reasoning loop
-│   │   └── llm_analyzer.py # GPT-4o Vision integration
-│   ├── captcha/
-│   │   └── solver.py       # 2Captcha integration
-│   └── scrapers/
-│       ├── meta_ads.py     # Meta Ads Library scraper
-│       └── csv_parser.py   # CSV data source
-├── resources/              # Icons and assets
-├── config/                 # Configuration files
+├── requirements.txt        # Python dependencies
 ├── build.py               # Build script
-└── requirements.txt
+├── config/
+│   ├── config.example.yaml # Example configuration
+│   └── config.yaml        # Your configuration
+├── assets/
+│   ├── icon.ico           # Windows icon
+│   ├── icon.icns          # macOS icon
+│   └── icon.png           # Linux icon
+└── src/
+    ├── core/
+    │   ├── agent.py       # Main agent controller
+    │   ├── config.py      # Configuration management
+    │   └── updater.py     # Auto-update system
+    ├── api/
+    │   ├── client.py      # REST API client
+    │   └── websocket.py   # Socket.IO client
+    ├── automation/
+    │   ├── browser.py     # Browser automation
+    │   ├── agent_orchestrator.py  # AI agent loop
+    │   └── llm_analyzer.py        # GPT-4o integration
+    ├── captcha/
+    │   └── solver.py      # CAPTCHA solving
+    ├── scrapers/
+    │   └── meta_ads.py    # Meta Ads Library scraper
+    └── ui/
+        └── tray.py        # System tray UI
 ```
 
-## Building from Source
-
-To create a standalone executable:
+### Running Tests
 
 ```bash
-# Standard build (with bundled browser, ~300MB)
+# Install test dependencies
+pip install pytest pytest-asyncio
+
+# Run tests
+pytest tests/
+```
+
+### Code Style
+
+```bash
+# Format code
+pip install black isort
+black .
+isort .
+
+# Lint
+pip install flake8
+flake8 src/
+```
+
+## Building
+
+### Generate Icons
+
+```bash
+# Install Pillow
+pip install Pillow
+
+# Generate icons for all platforms
+python assets/generate_icons.py
+
+# Or provide a custom source image
+python assets/generate_icons.py path/to/logo.png
+```
+
+### Build Executable
+
+```bash
+# Build for current platform
 python build.py
 
-# Without bundled browser (~50MB)
+# Build without bundled browser (smaller)
 python build.py --no-browser
 
-# Debug build (shows console)
+# Build with console (for debugging)
 python build.py --debug
 ```
 
-Output will be in the `dist/` folder.
+Output will be in `dist/`:
 
-## Configuration
+- **Windows**: `InboxHunterAgent.exe`
+- **macOS**: `InboxHunterAgent.app` + `InboxHunterAgent.dmg`
+- **Linux**: `InboxHunterAgent` + `InboxHunterAgent.AppImage`
 
-The agent stores its configuration in:
-- **Windows**: `%APPDATA%\InboxHunter\`
-- **macOS**: `~/Library/Application Support/InboxHunter/`
-- **Linux**: `~/.config/InboxHunter/`
+### Automated Builds
 
-Configuration is automatically synced from the web dashboard.
+The GitHub Actions workflow automatically builds for all platforms when you:
+
+1. Push a tag: `git tag agent-v2.1.0 && git push --tags`
+2. Or manually trigger the workflow
 
 ## Troubleshooting
 
-### Agent won't connect
+### Agent Won't Connect
 
-1. Check your internet connection
-2. Verify the agent is registered
-3. Check firewall settings for outbound connections
-4. Run with `--debug` for more info
+1. Check your registration token hasn't expired (valid for 1 hour)
+2. Verify the platform URL is correct
+3. Check firewall settings allow WebSocket connections
+4. Run with `--debug` to see detailed logs
 
-### Browser automation fails
+### Form Detection Fails
 
-1. Make sure Playwright browser is installed:
-   ```bash
-   playwright install chromium
-   ```
-2. Try running with `--console` to see errors
-3. Check if the target website is blocking automation
+1. Ensure your OpenAI API key is valid and has GPT-4o access
+2. Check if the page has unusual anti-bot protection
+3. Try running with `headless: false` to see what's happening
+4. Check the logs for specific error messages
 
-### High CPU/Memory usage
+### Browser Crashes
 
-1. The agent uses a browser, which requires resources
-2. Consider running in headless mode (dashboard setting)
-3. Reduce concurrent tasks in dashboard settings
+1. Update Playwright: `pip install -U playwright && playwright install`
+2. Clear browser cache: Delete `~/.cache/ms-playwright`
+3. Try a different browser in config: `browser: "firefox"`
 
-## Development
+### CAPTCHA Issues
 
-```bash
-# Install dev dependencies
-pip install -r requirements.txt
+1. Verify your 2Captcha API key and balance
+2. Increase timeout in config if CAPTCHAs are complex
+3. Check 2Captcha service status
 
-# Run tests
-pytest
+## Auto-Updates
 
-# Format code
-black src/
+The agent automatically checks for updates on startup. When an update is available:
 
-# Type checking
-mypy src/
+1. You'll see a notification in the system tray
+2. Choose "Update Now" to download and install
+3. The agent will restart automatically
+
+To disable auto-updates:
+
+```yaml
+agent:
+  check_updates: false
 ```
-
-## License
-
-Proprietary - All Rights Reserved
 
 ## Support
 
-- **Dashboard**: [app.inboxhunter.io](https://app.inboxhunter.io)
+- **Issues**: [GitHub Issues](https://github.com/YOUR_ORG/inboxhunter-agent/issues)
 - **Documentation**: [docs.inboxhunter.io](https://docs.inboxhunter.io)
 - **Email**: support@inboxhunter.io
+
+## License
+
+This project is proprietary software. See [LICENSE](LICENSE) for details.
+
+---
+
+<p align="center">
+  Made with ❤️ by the InboxHunter Team
+</p>

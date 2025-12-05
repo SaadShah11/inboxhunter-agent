@@ -37,6 +37,7 @@ env/
 .project
 .pydevproject
 .settings/
+.cursor/
 
 # Build artifacts
 *.spec
@@ -50,16 +51,14 @@ env/
 browsers/
 
 # Data files
-data/*.db
-data/*.sqlite
-data/screenshots/
-data/exports/
+data/
+!data/.gitkeep
 
 # Logs
 logs/
 *.log
 
-# Config with secrets
+# Config with secrets (IMPORTANT: contains API keys)
 config/config.yaml
 
 # OS files
@@ -88,5 +87,8 @@ dmypy.json
 .env.local
 .env.*.local
 
-# Agent config (contains tokens)
+# Agent config (contains tokens - stored in user's app data)
 agent_config.json
+
+# Screenshots from error debugging
+screenshots/

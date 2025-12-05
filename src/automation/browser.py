@@ -4,7 +4,10 @@ Implements user agent rotation, fingerprint randomization, and anti-detection by
 """
 
 import asyncio
+import os
+import sys
 import random
+import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
@@ -21,6 +24,92 @@ from src.utils.stealth import (
     reset_session_profile,
     BrowserProfile
 )
+
+
+def get_playwright_browsers_path() -> Path:
+    """
+    Get the correct Playwright browsers path.
+    Handles PyInstaller frozen executables by using system browser location.
+    """
+    # Check if running as frozen executable (PyInstaller)
+    if getattr(sys, 'frozen', False):
+        # Use system Playwright browsers path
+        if sys.platform == 'win32':
+            base = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'ms-playwright'
+        elif sys.platform == 'darwin':
+            base = Path.home() / 'Library' / 'Caches' / 'ms-playwright'
+        else:
+            base = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'ms-playwright'
+        return base
+    return None  # Let Playwright use its default
+
+
+def ensure_browsers_installed() -> bool:
+    """
+    Ensure Playwright browsers are installed.
+    Returns True if browsers are ready, False if installation failed.
+    """
+    browsers_path = get_playwright_browsers_path()
+    
+    if browsers_path:
+        # Set environment variable for Playwright
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(browsers_path)
+        logger.debug(f"Using Playwright browsers from: {browsers_path}")
+        
+        # Check if chromium is installed
+        chromium_dirs = list(browsers_path.glob('chromium-*')) if browsers_path.exists() else []
+        
+        if not chromium_dirs:
+            logger.warning("Playwright browsers not found. Installing...")
+            try:
+                # Run playwright install chromium
+                result = subprocess.run(
+                    [sys.executable, '-m', 'playwright', 'install', 'chromium'],
+                    capture_output=True,
+                    text=True,
+                    timeout=300  # 5 minute timeout
+                )
+                if result.returncode == 0:
+                    logger.success("Playwright browsers installed successfully")
+                    return True
+                else:
+                    logger.error(f"Failed to install browsers: {result.stderr}")
+                    # Try alternative: use bundled Python's playwright
+                    return _try_install_browsers_alternative()
+            except subprocess.TimeoutExpired:
+                logger.error("Browser installation timed out")
+                return False
+            except Exception as e:
+                logger.error(f"Failed to install browsers: {e}")
+                return _try_install_browsers_alternative()
+        else:
+            logger.debug(f"Found Playwright browsers: {chromium_dirs[0].name}")
+    
+    return True
+
+
+def _try_install_browsers_alternative() -> bool:
+    """Alternative method to install browsers using playwright CLI directly."""
+    try:
+        import playwright._impl._driver as driver
+        driver_executable = driver.compute_driver_executable()
+        
+        result = subprocess.run(
+            [str(driver_executable), 'install', 'chromium'],
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        
+        if result.returncode == 0:
+            logger.success("Playwright browsers installed via driver")
+            return True
+        else:
+            logger.error(f"Alternative install failed: {result.stderr}")
+            return False
+    except Exception as e:
+        logger.error(f"Alternative browser installation failed: {e}")
+        return False
 
 
 class BrowserAutomation:
@@ -54,6 +143,12 @@ class BrowserAutomation:
     async def initialize(self):
         """Initialize Playwright and browser with advanced stealth."""
         logger.info("🚀 Initializing browser automation with advanced stealth...")
+        
+        # Ensure browsers are installed (especially for PyInstaller builds)
+        if not ensure_browsers_installed():
+            raise RuntimeError(
+                "Playwright browsers not installed. Please run: playwright install chromium"
+            )
         
         # Generate consistent browser profile for this session
         self.profile = get_session_profile()

@@ -1,5 +1,6 @@
 """
-WebSocket client for real-time communication with InboxHunter platform.
+Socket.io client for real-time communication with InboxHunter platform.
+Uses python-socketio to connect to NestJS Socket.io server.
 """
 
 import asyncio
@@ -9,25 +10,28 @@ from datetime import datetime
 from loguru import logger
 
 try:
-    import websockets
-    from websockets.client import WebSocketClientProtocol
-    WEBSOCKETS_AVAILABLE = True
+    import socketio
+    SOCKETIO_AVAILABLE = True
 except ImportError:
-    WEBSOCKETS_AVAILABLE = False
-    logger.warning("websockets library not installed, using fallback")
+    SOCKETIO_AVAILABLE = False
+    logger.warning("python-socketio not installed. Run: pip install python-socketio[asyncio_client]")
 
 
 class PlatformWebSocket:
     """
-    WebSocket client for bi-directional communication with platform.
+    Socket.io client for bi-directional communication with platform.
     
-    Message types:
-    - task: New task to execute
-    - config: Configuration update
+    Events (from server):
+    - connected: Connection acknowledged
+    - task:execute: New task to execute
+    - config:update: Configuration update
     - command: Control command (pause, stop, etc.)
+    
+    Events (to server):
     - heartbeat: Keep-alive ping
-    - result: Task result (agent → platform)
-    - status: Agent status update (agent → platform)
+    - task:progress: Task progress update
+    - task:complete: Task completion
+    - log: Log message
     """
     
     RECONNECT_DELAY = 5  # Seconds between reconnection attempts
@@ -43,17 +47,22 @@ class PlatformWebSocket:
         on_command: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None
     ):
         """
-        Initialize WebSocket client.
+        Initialize Socket.io client.
         
         Args:
-            url: WebSocket URL (wss://api.inboxhunter.io/ws)
+            url: Platform URL (http://localhost:3001)
             agent_id: Unique agent identifier
             agent_token: Authentication token
             on_task: Callback for incoming tasks
             on_config_update: Callback for config updates
             on_command: Callback for control commands
         """
-        self.url = url
+        # Convert ws:// to http:// for Socket.io
+        self.url = url.replace("ws://", "http://").replace("wss://", "https://")
+        # Remove /ws/agent path if present (Socket.io uses namespace differently)
+        if "/ws/agent" in self.url:
+            self.url = self.url.replace("/ws/agent", "")
+        
         self.agent_id = agent_id
         self.agent_token = agent_token
         
@@ -63,73 +72,124 @@ class PlatformWebSocket:
         self.on_command = on_command
         
         # Connection state
-        self._ws: Optional[Any] = None  # WebSocketClientProtocol
+        self._sio: Optional[socketio.AsyncClient] = None
         self._connected = False
-        self._reconnecting = False
         self._should_run = True
         
-        # Message queue for offline buffering
-        self._outgoing_queue: asyncio.Queue = asyncio.Queue()
-        
-        # Tasks
+        # Heartbeat task
         self._heartbeat_task: Optional[asyncio.Task] = None
-        self._receive_task: Optional[asyncio.Task] = None
     
     @property
     def is_connected(self) -> bool:
         """Check if currently connected."""
-        return self._connected and self._ws is not None
+        return self._connected and self._sio is not None
     
     async def connect(self) -> bool:
         """
-        Establish WebSocket connection to platform.
+        Establish Socket.io connection to platform.
         
         Returns:
             True if connected successfully
         """
-        if not WEBSOCKETS_AVAILABLE:
-            logger.error("websockets library not available")
+        if not SOCKETIO_AVAILABLE:
+            logger.error("python-socketio not available. Install with: pip install python-socketio[asyncio_client]")
             return False
         
         try:
-            # Build connection URL with auth
-            auth_url = f"{self.url}?agent_id={self.agent_id}&token={self.agent_token}"
+            logger.info(f"Connecting to {self.url}/ws/agent...")
             
-            logger.info(f"Connecting to {self.url}...")
-            
-            self._ws = await websockets.connect(
-                auth_url,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=5
+            # Create Socket.io client
+            self._sio = socketio.AsyncClient(
+                reconnection=True,
+                reconnection_attempts=5,
+                reconnection_delay=self.RECONNECT_DELAY,
+                logger=False,
+                engineio_logger=False
             )
             
-            self._connected = True
-            logger.info("WebSocket connected")
+            # Register event handlers
+            self._register_handlers()
             
-            # Send initial status
-            await self._send_status("connected")
+            # Connect with auth token
+            await self._sio.connect(
+                self.url,
+                namespaces=['/ws/agent'],
+                auth={'token': self.agent_token},
+                transports=['websocket', 'polling']
+            )
             
-            # Start background tasks
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-            self._receive_task = asyncio.create_task(self._receive_loop())
+            # Wait a moment for connection to establish
+            await asyncio.sleep(0.5)
             
-            # Flush any queued messages
-            await self._flush_queue()
-            
-            return True
+            if self._sio.connected:
+                self._connected = True
+                logger.success("✅ Socket.io connected to platform")
+                
+                # Start heartbeat
+                self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+                
+                return True
+            else:
+                logger.error("Socket.io connection failed")
+                return False
             
         except Exception as e:
             logger.error(f"Connection failed: {e}")
             self._connected = False
             return False
     
+    def _register_handlers(self):
+        """Register Socket.io event handlers."""
+        sio = self._sio
+        
+        @sio.on('connect', namespace='/ws/agent')
+        async def on_connect():
+            logger.info("Socket.io: Connected event received")
+            self._connected = True
+        
+        @sio.on('disconnect', namespace='/ws/agent')
+        async def on_disconnect():
+            logger.warning("Socket.io: Disconnected from platform")
+            self._connected = False
+        
+        @sio.on('connected', namespace='/ws/agent')
+        async def on_connected_ack(data):
+            logger.info(f"Socket.io: Connection acknowledged - Agent ID: {data.get('agentId')}")
+        
+        @sio.on('task:execute', namespace='/ws/agent')
+        async def on_task_execute(data):
+            logger.info(f"Socket.io: Received task to execute")
+            if self.on_task:
+                await self.on_task(data)
+        
+        @sio.on('config:update', namespace='/ws/agent')
+        async def on_config_update(data):
+            logger.info("Socket.io: Received config update")
+            if self.on_config_update:
+                await self.on_config_update(data)
+        
+        @sio.on('command', namespace='/ws/agent')
+        async def on_command(data):
+            command = data.get('command')
+            params = data.get('params', {})
+            logger.info(f"Socket.io: Received command: {command}")
+            if self.on_command:
+                await self.on_command(command, params)
+        
+        @sio.on('error', namespace='/ws/agent')
+        async def on_error(data):
+            logger.error(f"Socket.io: Server error: {data}")
+        
+        @sio.on('connect_error', namespace='/ws/agent')
+        async def on_connect_error(data):
+            logger.error(f"Socket.io: Connection error: {data}")
+    
     async def disconnect(self):
         """Disconnect from platform."""
         self._should_run = False
         self._connected = False
         
-        # Cancel background tasks
+        # Cancel heartbeat
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             try:
@@ -137,166 +197,28 @@ class PlatformWebSocket:
             except asyncio.CancelledError:
                 pass
         
-        if self._receive_task:
-            self._receive_task.cancel()
+        # Disconnect Socket.io
+        if self._sio:
             try:
-                await self._receive_task
-            except asyncio.CancelledError:
-                pass
-        
-        # Close WebSocket
-        if self._ws:
-            try:
-                await self._ws.close()
+                await self._sio.disconnect()
             except:
                 pass
-            self._ws = None
+            self._sio = None
         
-        logger.info("WebSocket disconnected")
-    
-    async def _receive_loop(self):
-        """Background task to receive and process messages."""
-        while self._should_run and self._ws:
-            try:
-                message = await self._ws.recv()
-                await self._handle_message(message)
-                
-            except websockets.ConnectionClosed:
-                logger.warning("WebSocket connection closed")
-                self._connected = False
-                if self._should_run:
-                    await self._reconnect()
-                break
-                
-            except Exception as e:
-                logger.error(f"Receive error: {e}")
-                await asyncio.sleep(1)
+        logger.info("Socket.io disconnected")
     
     async def _heartbeat_loop(self):
         """Background task to send heartbeats."""
-        while self._should_run:
+        while self._should_run and self._connected:
             try:
                 await asyncio.sleep(self.HEARTBEAT_INTERVAL)
-                if self._connected:
-                    await self._send({
-                        "type": "heartbeat",
-                        "timestamp": datetime.utcnow().isoformat()
-                    })
+                if self._connected and self._sio:
+                    await self._sio.emit('heartbeat', {'status': 'online'}, namespace='/ws/agent')
+                    logger.debug("Heartbeat sent")
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Heartbeat error: {e}")
-    
-    async def _reconnect(self):
-        """Attempt to reconnect to platform."""
-        if self._reconnecting:
-            return
-        
-        self._reconnecting = True
-        attempt = 0
-        
-        while self._should_run:
-            attempt += 1
-            logger.info(f"Reconnection attempt {attempt}...")
-            
-            if await self.connect():
-                self._reconnecting = False
-                return
-            
-            # Exponential backoff (max 60 seconds)
-            delay = min(self.RECONNECT_DELAY * (2 ** (attempt - 1)), 60)
-            logger.info(f"Reconnecting in {delay}s...")
-            await asyncio.sleep(delay)
-        
-        self._reconnecting = False
-    
-    async def _handle_message(self, raw_message: str):
-        """
-        Process incoming WebSocket message.
-        
-        Args:
-            raw_message: Raw JSON message string
-        """
-        try:
-            message = json.loads(raw_message)
-            msg_type = message.get("type")
-            data = message.get("data", {})
-            
-            logger.debug(f"Received message: {msg_type}")
-            
-            if msg_type == "task":
-                if self.on_task:
-                    await self.on_task(data)
-                    
-            elif msg_type == "config":
-                if self.on_config_update:
-                    await self.on_config_update(data)
-                    
-            elif msg_type == "command":
-                command = data.get("command")
-                params = data.get("params", {})
-                if self.on_command:
-                    await self.on_command(command, params)
-                    
-            elif msg_type == "heartbeat_ack":
-                logger.debug("Heartbeat acknowledged")
-                
-            elif msg_type == "error":
-                logger.error(f"Platform error: {data.get('message')}")
-                
-            else:
-                logger.warning(f"Unknown message type: {msg_type}")
-                
-        except json.JSONDecodeError:
-            logger.error(f"Invalid JSON message: {raw_message[:100]}")
-        except Exception as e:
-            logger.error(f"Message handling error: {e}")
-    
-    async def _send(self, message: Dict[str, Any]) -> bool:
-        """
-        Send message to platform.
-        
-        Args:
-            message: Message dictionary to send
-            
-        Returns:
-            True if sent successfully
-        """
-        if not self._connected or not self._ws:
-            # Queue for later
-            await self._outgoing_queue.put(message)
-            return False
-        
-        try:
-            await self._ws.send(json.dumps(message))
-            return True
-        except Exception as e:
-            logger.error(f"Send error: {e}")
-            await self._outgoing_queue.put(message)
-            return False
-    
-    async def _flush_queue(self):
-        """Send all queued messages."""
-        while not self._outgoing_queue.empty():
-            try:
-                message = self._outgoing_queue.get_nowait()
-                if self._ws:
-                    await self._ws.send(json.dumps(message))
-            except Exception as e:
-                logger.error(f"Queue flush error: {e}")
-                break
-    
-    async def _send_status(self, status: str, details: Optional[Dict] = None):
-        """Send status update to platform."""
-        await self._send({
-            "type": "status",
-            "data": {
-                "status": status,
-                "agent_id": self.agent_id,
-                "timestamp": datetime.utcnow().isoformat(),
-                **(details or {})
-            }
-        })
     
     async def send_task_result(self, task_id: str, result: Dict[str, Any]):
         """
@@ -306,60 +228,92 @@ class PlatformWebSocket:
             task_id: ID of the completed task
             result: Task result dictionary
         """
-        await self._send({
-            "type": "result",
-            "data": {
-                "task_id": task_id,
-                "result": result,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        })
-        logger.debug(f"Sent result for task {task_id}")
+        if not self._connected or not self._sio:
+            logger.warning("Not connected, cannot send task result")
+            return
+        
+        try:
+            await self._sio.emit('task:complete', {
+                'taskId': task_id,
+                'result': result
+            }, namespace='/ws/agent')
+            logger.debug(f"Sent result for task {task_id}")
+        except Exception as e:
+            logger.error(f"Failed to send task result: {e}")
     
-    async def send_log(self, level: str, message: str):
+    async def send_task_progress(self, task_id: str, progress: int, status: str = None):
+        """
+        Send task progress update.
+        
+        Args:
+            task_id: Task ID
+            progress: Progress percentage (0-100)
+            status: Optional status message
+        """
+        if not self._connected or not self._sio:
+            return
+        
+        try:
+            await self._sio.emit('task:progress', {
+                'taskId': task_id,
+                'progress': progress,
+                'status': status
+            }, namespace='/ws/agent')
+        except Exception as e:
+            logger.error(f"Failed to send progress: {e}")
+    
+    async def send_log(self, level: str, message: str, metadata: Dict = None):
         """
         Send log message to platform for remote viewing.
         
         Args:
             level: Log level (info, warning, error)
             message: Log message
+            metadata: Optional additional data
         """
-        await self._send({
-            "type": "log",
-            "data": {
-                "level": level,
-                "message": message,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        })
-    
-    async def request_task(self):
-        """Request a new task from the platform."""
-        await self._send({
-            "type": "request_task",
-            "data": {
-                "agent_id": self.agent_id,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        })
-    
-    async def process_messages(self):
-        """
-        Process incoming messages (call this in main loop if not using background tasks).
-        """
-        if not self._connected or not self._ws:
+        if not self._connected or not self._sio:
             return
         
         try:
-            # Non-blocking check for messages
-            message = await asyncio.wait_for(self._ws.recv(), timeout=0.1)
-            await self._handle_message(message)
-        except asyncio.TimeoutError:
-            pass
-        except websockets.ConnectionClosed:
-            self._connected = False
-            if self._should_run:
-                asyncio.create_task(self._reconnect())
+            await self._sio.emit('log', {
+                'level': level,
+                'message': message,
+                'metadata': metadata
+            }, namespace='/ws/agent')
+        except Exception as e:
+            logger.debug(f"Failed to send log: {e}")
+    
+    async def send_scraped_links(self, links: list):
+        """
+        Send scraped links to platform for bulk storage.
+        
+        Args:
+            links: List of scraped link data dictionaries
+        """
+        if not self._connected or not self._sio:
+            logger.warning("Not connected, cannot send scraped links")
+            return
+        
+        try:
+            await self._sio.emit('scrape:results', {
+                'links': links,
+                'count': len(links)
+            }, namespace='/ws/agent')
+            logger.info(f"Sent {len(links)} scraped links to platform")
+        except Exception as e:
+            logger.error(f"Failed to send scraped links: {e}")
+    
+    async def process_messages(self):
+        """
+        Process incoming messages.
+        Socket.io handles this automatically, but we need this for compatibility.
+        """
+        if not self._connected:
+            return
+        
+        # Socket.io handles message processing internally
+        # Just yield control to event loop
+        await asyncio.sleep(0.1)
 
 
 class MockPlatformWebSocket:
@@ -375,23 +329,25 @@ class MockPlatformWebSocket:
         self.on_command = kwargs.get("on_command")
     
     async def connect(self) -> bool:
-        logger.info("Mock WebSocket: Simulating connection")
+        logger.info("Mock Socket.io: Simulating connection")
         self.is_connected = True
         return True
     
     async def disconnect(self):
         self.is_connected = False
-        logger.info("Mock WebSocket: Disconnected")
+        logger.info("Mock Socket.io: Disconnected")
     
     async def send_task_result(self, task_id: str, result: Dict[str, Any]):
-        logger.info(f"Mock WebSocket: Task result for {task_id}: {result.get('success')}")
+        logger.info(f"Mock Socket.io: Task result for {task_id}: {result.get('success')}")
     
-    async def send_log(self, level: str, message: str):
+    async def send_task_progress(self, task_id: str, progress: int, status: str = None):
+        logger.debug(f"Mock Socket.io: Progress {progress}%")
+    
+    async def send_log(self, level: str, message: str, metadata: Dict = None):
         pass
     
-    async def request_task(self):
-        logger.info("Mock WebSocket: Task requested")
+    async def send_scraped_links(self, links: list):
+        logger.info(f"Mock Socket.io: Scraped {len(links)} links")
     
     async def process_messages(self):
         await asyncio.sleep(0.1)
-

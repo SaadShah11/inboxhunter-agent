@@ -1,31 +1,101 @@
-# InboxHunter Agent - Example Configuration
-# ==========================================
+# InboxHunter Agent - Configuration
+# ==================================
 # 
-# This file shows available configuration options.
-# The agent primarily receives configuration from the platform,
-# but you can set local overrides here.
-#
-# Copy this file to config.yaml and modify as needed.
+# Copy this file to config.yaml and update with your settings.
+# 
+# Configuration Priority:
+# 1. Platform settings (via dashboard) - highest priority
+# 2. Local config.yaml - overrides defaults
+# 3. Built-in defaults - lowest priority
 
-# Platform connection (usually not needed - set via registration)
+# ==========================================
+# Platform Connection
+# ==========================================
+# These are set automatically during registration.
+# Only change if self-hosting the platform.
 platform:
-  api_url: "https://api.inboxhunter.io"
-  ws_url: "wss://api.inboxhunter.io/ws"
+  api_url: "http://localhost:3001"      # Backend API URL
+  ws_url: "ws://localhost:3001/ws/agent" # WebSocket URL
 
-# Local overrides (optional - platform settings take precedence)
+# ==========================================
+# Credentials (for form filling)
+# ==========================================
+# Used when filling signup forms automatically.
+credentials:
+  first_name: "John"
+  last_name: "Doe"
+  full_name: "John Doe"
+  email: "your-email@example.com"
+  phone:
+    country_code: "+1"
+    number: "5551234567"
+    full: "+15551234567"
+
+# ==========================================
+# LLM Configuration (AI Form Detection)
+# ==========================================
+# GPT-4o Vision is used for intelligent form detection.
+# Get your API key from: https://platform.openai.com/api-keys
+llm:
+  enabled: true
+  provider: "openai"           # "openai" or "anthropic"
+  api_key: "sk-your-openai-api-key-here"
+  model: "gpt-4o"              # Recommended: gpt-4o for vision
+
+# ==========================================
+# CAPTCHA Solving
+# ==========================================
+# Optional: Configure 2Captcha for automatic CAPTCHA solving.
+# Get your API key from: https://2captcha.com
+captcha:
+  service: "2captcha"
+  api_key: ""                  # Leave empty to disable
+  timeout: 120                 # Seconds to wait for solution
+
+# ==========================================
+# Browser Automation
+# ==========================================
 automation:
-  browser: "chromium"
-  headless: false
+  browser: "chromium"          # chromium, firefox, or webkit
+  headless: false              # Set true to hide browser window
   viewport_width: 1920
   viewport_height: 1080
-  stealth_enabled: true
+  stealth_enabled: true        # Enable bot detection bypass
+  typing_delay_min: 0.1        # Min delay between keystrokes (seconds)
+  typing_delay_max: 0.3        # Max delay between keystrokes (seconds)
 
-# Agent behavior
+# ==========================================
+# Agent Behavior
+# ==========================================
 agent:
-  auto_start: true
-  minimize_to_tray: true
-  check_updates: true
-  log_level: "INFO"
+  auto_start: true             # Auto-connect on launch
+  minimize_to_tray: true       # Minimize to system tray
+  check_updates: true          # Check for agent updates
+  log_level: "INFO"            # DEBUG, INFO, WARNING, ERROR
 
-# Note: Credentials, LLM keys, and CAPTCHA keys are managed
-# through the web dashboard for security.
+# ==========================================
+# Rate Limiting (Safety)
+# ==========================================
+rate_limiting:
+  max_signups_per_hour: 25
+  max_signups_per_day: 250
+  delay_between_signups: [30, 90]  # Random delay range (seconds)
+  max_consecutive_failures: 5
+  cooldown_after_failures: 600     # 10 minutes
+
+# ==========================================
+# Data Sources (Optional)
+# ==========================================
+# Configure where to get URLs to process.
+# Usually controlled via platform dashboard.
+sources:
+  meta_ads_library:
+    enabled: false
+    access_token: ""
+    search_keywords:
+      - "marketing"
+      - "funnel"
+    ad_limit: 50
+  csv_data:
+    enabled: false
+    data_path: "./data/training.csv"

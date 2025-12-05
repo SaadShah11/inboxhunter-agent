@@ -68,37 +68,48 @@ async def register_agent():
     print("\n" + "=" * 50)
     print("InboxHunter Agent Registration")
     print("=" * 50)
-    print("\nTo register this agent, you need a user token from the dashboard.")
-    print("1. Go to https://app.inboxhunter.io/settings/agents")
-    print("2. Click 'Add Agent' and copy the registration token")
+    print("\nTo register this agent, you need a registration token from the dashboard.")
+    print()
+    print("Steps:")
+    print("  1. Open the InboxHunter dashboard (http://localhost:3000)")
+    print("  2. Go to Dashboard → Agents")
+    print("  3. Click 'Add Agent' and copy the registration token")
     print()
     
-    user_token = input("Enter your registration token: ").strip()
+    registration_token = input("Enter your registration token: ").strip()
     
-    if not user_token:
+    if not registration_token:
         print("❌ No token provided")
         return False
     
     machine_name = input("Enter a name for this agent (or press Enter for default): ").strip()
     
+    # Ask for platform URL (for local development)
+    print("\nPlatform API URL (press Enter for default http://localhost:3001):")
+    api_url = input("API URL: ").strip() or "http://localhost:3001"
+    
     print("\nRegistering agent...")
     
-    client = PlatformClient()
-    result = await client.register_agent(user_token, machine_name or None)
+    client = PlatformClient(api_url=api_url)
+    result = await client.register_agent(registration_token, machine_name or None)
     
     if result:
         # Save to config
         config = get_agent_config()
         config.agent_id = result["agent_id"]
         config.agent_token = result["agent_token"]
+        config.platform.api_url = api_url
+        config.platform.ws_url = api_url.replace("http://", "ws://").replace("https://", "wss://") + "/ws/agent"
         config.save()
         
         print("\n✅ Agent registered successfully!")
         print(f"   Agent ID: {result['agent_id']}")
+        print(f"   Platform: {api_url}")
         print("\nYou can now start the agent with: python main.py")
         return True
     else:
         print("\n❌ Registration failed. Please check your token and try again.")
+        print("   Make sure the backend is running and the token is valid.")
         return False
 
 

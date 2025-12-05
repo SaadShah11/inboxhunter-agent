@@ -13,6 +13,7 @@ from playwright.async_api import async_playwright, Browser, Page
 from loguru import logger
 
 from src.config import Config
+from src.automation.browser import ensure_browsers_installed
 
 
 class MetaAdsLibraryScraper:
@@ -41,6 +42,12 @@ class MetaAdsLibraryScraper:
     async def initialize(self):
         """Initialize browser for scraping."""
         logger.info("Initializing Meta Ads Library scraper...")
+        
+        # Ensure browsers are installed (especially for PyInstaller builds)
+        if not ensure_browsers_installed():
+            raise RuntimeError(
+                "Playwright browsers not installed. Please run: playwright install chromium"
+            )
         
         self._playwright = await async_playwright().start()
         self.browser = await self._playwright.chromium.launch(

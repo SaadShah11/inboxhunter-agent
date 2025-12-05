@@ -282,23 +282,52 @@ class InboxHunterAgent:
         Returns:
             Result dictionary with scraped URLs
         """
-        source = task.get("source", "meta")
+        source = task.get("source", "meta_ads")
         params = task.get("params", {})
         
         self._emit_log(f"🔍 Starting scrape: {source}")
         
         try:
-            if source == "meta":
+            if source in ["meta", "meta_ads"]:
                 from src.scrapers.meta_ads import MetaAdsLibraryScraper
                 
-                scraper = MetaAdsLibraryScraper(self._build_legacy_config())
+                # Build config and set ad limit
+                config = self._build_legacy_config()
+                limit = params.get("limit", 50)
+                config.sources.meta_ads_library.ad_limit = limit
+                config.sources.meta_ads_library.enabled = True
+                
+                scraper = MetaAdsLibraryScraper(config, stop_check=lambda: self._stop_requested)
                 await scraper.initialize()
                 
                 keywords = params.get("keywords", ["marketing"])
-                limit = params.get("limit", 50)
+                self._emit_log(f"🔎 Searching keywords: {', '.join(keywords)}")
                 
-                ads = await scraper.scrape_ads(keywords=keywords, limit=limit)
+                ads = await scraper.scrape_ads(keywords=keywords)
                 await scraper.close()
+                
+                self._emit_log(f"📊 Found {len(ads)} unique ads")
+                
+                # Send scraped links to platform via API
+                if ads and self._ws_client:
+                    links_data = [
+                        {
+                            "url": ad.get("url"),
+                            "title": ad.get("title"),
+                            "advertiserName": ad.get("advertiser_name"),
+                            "source": "meta_ads",
+                            "searchKeyword": ad.get("keyword"),
+                            "metadata": {
+                                "scraped_at": ad.get("scraped_at"),
+                                "description": ad.get("description")
+                            }
+                        }
+                        for ad in ads if ad.get("url")
+                    ]
+                    
+                    # Send links back via WebSocket
+                    await self._ws_client.send_scraped_links(links_data)
+                    self._emit_log(f"📤 Sent {len(links_data)} links to platform")
                 
                 return {
                     "success": True,
