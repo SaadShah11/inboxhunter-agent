@@ -82,8 +82,6 @@ htmlcov/
 dmypy.json
 
 # Environment files
-.env
-.env.local
 .env.*.local
 
 # Agent config (contains tokens - stored in user's app data)
@@ -95,3 +93,5 @@ temp_auto_push.bat
 temp_interactive_push.bat
 .gitignore
 branch_structure.json
+config.bat
+node_modules
